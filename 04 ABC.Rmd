@@ -1,0 +1,203 @@
+---
+title: "Approximate Bayesian Computation"
+author: "Dominik Klepl"
+date: "12/8/2019"
+output: word_document
+---
+
+In this notebook we take the best model structure from previous notebooks and use ABC to estimate the posterior distribution of the parameters instead of just point estimates.
+
+We create a grid of possible values of the parameters and we try all value combinations in this 3D grid. Generate data from each model, if the simulated data is close enough to the sample data then we accept the parameters.
+
+```{r include=FALSE}
+pacman::p_load(ggplot2, ggthemes, tidyr, patchwork, plotly, viridis)
+```
+
+
+Load data
+```{r}
+data = read.csv("data/x_y.csv", header = F)
+colnames(data) = c("x", "y")
+```
+
+## Priors
+MLE theta is 0.502, 2.004 and 2
+Create priors for all 3 parameters
+And bind samples from priors to a matrix for easier manipulation later.
+```{r echo=FALSE}
+sampling_n = 4e7 #draw 30M from each prior
+
+prior_x1 = runif(sampling_n, -5, 5)
+prior_x2 = runif(sampling_n, -5, 5)
+prior_x4 = runif(sampling_n, -5, 5)
+
+#merge priors to one matrix so we can simply take rows as theta candidates
+priors = cbind(prior_x1, prior_x2, prior_x4)
+priors = as.data.frame(priors)
+colnames(priors) = c("x1", "x2", "x4")
+
+rm(prior_x1)
+rm(prior_x2)
+rm(prior_x4)
+```
+
+Plot priors
+```{r echo=FALSE}
+priors_long = gather(priors, prior, sample, x1:x4, factor_key = T)
+
+(priors_plot = ggplot(priors_long, aes(x = sample, color = prior))+
+  geom_density()+
+  facet_wrap(~prior, scales = "free")+
+  theme_few()+
+  scale_color_few()+
+  guides(color = F)+
+  xlab(""))
+
+ggsave("figures/10_priors.png", width = 7, height = 4)
+rm(priors_long)
+rm(priors_plot)
+```
+
+Create X matrix with predictors as columns
+```{r echo=FALSE}
+X = cbind(data$x,
+          data$x^2,
+          data$x^4
+          ) 
+```
+
+
+## Rejection ABC
+Iterate over rows of priors matrix (candidate theta values), generate data using candidate theta and measure distance between simulated and real data. If distance < tolerance, append the parameter combination to posterior samples. We can use MSE as tolerance for the rejection algorithm.
+```{r echo=FALSE}
+posterior =data.frame(x1 = numeric(),
+                      x2 = numeric(),
+                      x4 = numeric())
+
+#cross validation testing MSE +3*sd
+#tolerance = 0.028
+
+tolerance = 0.2
+
+
+for (i in 1:nrow(priors)) {
+  candidate = t(as.matrix(priors[i,]))
+  simulated = X %*% candidate
+  
+  MSE = mean((data$y - simulated)^2)
+  
+  if (MSE < tolerance) {
+    append = t(candidate)
+    colnames(append) = c("x1", "x2", "x4")
+    posterior = rbind(posterior, append)
+  }
+}
+
+cat(nrow(posterior), "samples were accepted.")
+
+write.csv(posterior, "data/posterior.csv")
+```
+
+```{r echo=FALSE}
+h1 = ggplot(posterior, aes(x = x1))+
+  geom_density()+
+  labs(x = "", y="")+
+  theme_few()
+h2 = ggplot(posterior, aes(x = x2))+
+  geom_density()+
+  labs(x = "", y="")+
+  theme_few()
+h3 = ggplot(posterior, aes(x = x4))+
+  geom_density()+
+  labs(x = "", y="")+
+  scale_x_continuous(expand = c(0, 0),
+                     breaks = round(seq(min(posterior$x4), max(posterior$x4), by = 0.02),2))+
+  theme_few()
+
+p1 = ggplot(posterior, aes(x=x1, y=x2) ) +
+  stat_density_2d(aes(fill = ..density..), geom = "raster", contour = FALSE) +
+  scale_fill_viridis() +
+  scale_x_continuous(expand = c(0, 0),
+                     breaks = round(seq(min(posterior$x1), max(posterior$x1), by = 0.2),1)) +
+  scale_y_continuous(expand = c(0, 0),
+                     breaks = round(seq(min(posterior$x2), max(posterior$x2), by = 0.2),1)) +
+  theme(
+    legend.position='none'
+  )+
+  guides(fill = F)+
+  labs(x = "", y="")+
+  theme_few()
+
+p2 = ggplot(posterior, aes(x=x1, y=x4) ) +
+  stat_density_2d(aes(fill = ..density..), geom = "raster", contour = FALSE) +
+  scale_fill_viridis() +
+  scale_x_continuous(expand = c(0, 0),
+                     breaks = round(seq(min(posterior$x1), max(posterior$x1), by = 0.2),1)) +
+  scale_y_continuous(expand = c(0, 0),
+                     breaks = round(seq(min(posterior$x4), max(posterior$x4), by = 0.05),2)) +
+  theme(
+    legend.position='none'
+  )+
+  guides(fill = F)+
+  labs(x = "", y="")+
+  theme_few()
+
+p3 = ggplot(posterior, aes(x=x2, y=x4) ) +
+  stat_density_2d(aes(fill = ..density..), geom = "raster", contour = FALSE) +
+  scale_fill_viridis() +
+  scale_x_continuous(expand = c(0, 0),breaks = round(seq(min(posterior$x2), max(posterior$x2), by = 0.2),1)) +
+  scale_y_continuous(expand = c(0, 0),
+                     breaks = round(seq(min(posterior$x4), max(posterior$x4), by = 0.05),2)) +
+  theme(
+    legend.position='none'
+  )+
+  guides(fill = F)+
+  labs(x = "", y="")+
+  theme_few()
+
+final_plot = 
+  (h1+(p1+coord_flip())+(p2+coord_flip()))/
+  (p1+h2+(p3+coord_flip()))/
+  (p2+p3+h3)
+ggsave("figures/11_ABC_posterior.png", width = 7, height = 4)
+```
+
+### Get MAP
+Let's extract the MAP. In this case we can assume that the mode of the posterior is the MAP.
+```{r echo=FALSE}
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+cat("x: ",getmode(posterior$x1))
+cat("\nx2:", getmode(posterior$x2))
+cat("\nx4:", getmode(posterior$x4))
+```
+
+### Generate predictions
+```{r}
+posterior = read.csv("data/posterior.csv", row.names = 1)
+predictions = data.frame()
+
+for (i in 1:nrow(posterior)) {
+    candidate = t(as.matrix(posterior[i,]))
+    simulated = X %*% candidate
+    append = data.frame(y = simulated, which = rep(i, length(simulated)))
+    colnames(append)[1] = "y"
+    predictions = rbind(predictions, append)
+}
+
+predictions$which = as.factor(predictions$which)
+predictions$x = rep(data$x, nrow(posterior))
+predictions$truth = rep(data$y, nrow(posterior))
+
+(plot_predictions = ggplot(predictions, aes(x = x, y = y, color=which))+
+  geom_line(alpha = 0.2)+
+  geom_line(aes(y = truth), color="black")+
+  guides(color = F)+
+  theme_few())
+
+ggsave("figures/12_bayesian_prediction.png", plot_predictions, width = 7, height = 4)
+```
+

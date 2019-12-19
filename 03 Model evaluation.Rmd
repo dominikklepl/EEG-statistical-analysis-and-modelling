@@ -1,0 +1,402 @@
+---
+title: "Model evaluation"
+author: "Dominik Klepl"
+date: "12/5/2019"
+output:
+  html_document:
+    df_print: paged
+---
+
+According to the model selection the best model structure is: y ~ x1 + x2 + x4 + error.
+Now we're going to test the model further.
+
+```{r include=FALSE}
+pacman::p_load(ggplot2, ggthemes, tidyr, patchwork, plotly, ggforce)
+```
+
+
+### Fit the model
+
+```{r echo=FALSE}
+data = read.csv("data/x_y.csv", header = F)
+colnames(data) = c("x", "y")
+```
+
+Construct X matrix
+```{r echo=FALSE}
+X = cbind(data$x,
+          data$x^2,
+          data$x^4
+          ) 
+```
+
+Split into train-test
+```{r echo=FALSE}
+train_X = X[1:200,]
+train_y = as.matrix(data$y[1:200])
+
+test_X = X[201:250,]
+test_y = as.matrix(data$y[201:250])
+```
+
+
+Fit model, generate predictions, compute error (SSE, MSE) and adjusted R^2.
+```{r echo=FALSE}
+theta = solve(crossprod(train_X), crossprod(train_X, train_y))
+
+y_pred = train_X %*% theta
+
+residuals = (train_y - y_pred)
+SSE = sum(residuals^2)
+sigma_sq = SSE/(nrow(train_X) - 1)
+```
+
+```{r echo = F}
+#calculate R^2 and adjusted R^2
+R2_adj = function(x, y, p) {
+  n = length(x)
+  R2 = cor(x, y) ^ 2
+  R2_adj = 1 - (1 - R2)*((n - 1)/(n - p - 1))
+  return(R2_adj)
+}
+
+r_adjusted = R2_adj(x = train_y, y = y_pred, p = 3)
+
+cat("MSE is:", SSE/nrow(train_y),
+    "\nAdjusted R^2 is:", r_adjusted)
+```
+
+
+## Residual analysis
+
+Numerical analysis
+```{r echo=F}
+quantiles = quantile(residuals)
+names(quantiles) = c("Min", "25%", "Median", "75%", "Max")
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+cat("Residual analysis:\n")
+quantiles
+cat("\nResidual mean:", round(mean(residuals), 3))
+cat("\nResidual mode:", round(getmode(residuals), 3))
+```
+
+
+```{r echo=F}
+residuals_pl = as.data.frame(residuals)
+
+res_plot = ggplot(residuals_pl, aes(x = V1))+
+  geom_histogram(bins = 10)+
+    theme_few()+
+    xlab("Residuals")
+
+qqplot = ggplot(residuals_pl, aes(sample = V1))+
+  stat_qq()+
+  theme_few()
+
+(residual_analysis = res_plot + qqplot)
+
+ggsave("figures/06_best_residuals.png", residual_analysis, width = 7, height = 4)
+```
+
+
+## Parameter covariance matrix
+```{r echo=F}
+cov = sigma_sq * (solve(t(train_X) %*% train_X))
+print(round(cov, 6))
+```
+
+## Parameter uncertainty pdf
+Because we have 3 parameters, we'll need to plot all their combinations resulting in 3 plots.
+
+First we create grid of possible parameter values for which we estimate the uncertainty.
+```{r echo=FALSE}
+n_points = 50
+range = 0.01
+x1_grid = seq(theta[1]-range, theta[1]+range, length = n_points)
+x2_grid = seq(theta[2]-range, theta[2]+range, length = n_points)
+x4_grid = seq(theta[3]-range, theta[3]+range, length = n_points)
+
+t = rbind(x1_grid[50], x2_grid[50], x4_grid[50])
+```
+
+Now we can calculate the pdf
+```{r echo=FALSE}
+cov_inv = (t(train_X) %*% train_X) * (1/sigma_sq)
+cov_det = det(cov)
+
+n_params = 3
+```
+
+#### Parameters x1 and x2
+```{r echo=F}
+pdf_1_2 = matrix(0 , n_points , n_points)
+for ( r in 1:length(x1_grid) ){
+  for ( c in 1:length(x2_grid) ){
+    candidate = as.matrix(rbind( x1_grid[r], x2_grid[c], theta[3,] ))
+    thetas_diff = candidate - theta
+    pdf_1_2[r,c] = ( 1/sqrt( ( (2*pi)^n_params ) * cov_det) ) * 
+      exp( -0.5 * t(-thetas_diff) %*% cov_inv %*% -thetas_diff )
+  }
+}
+
+plot_ly(x = x1_grid, y = x2_grid, z = pdf_1_2) %>% add_surface(
+  contours = list(
+    z = list(
+      show=TRUE,
+      usecolormap=TRUE,
+      highlightcolor="#ff0000",
+      project=list(z=TRUE)
+      )
+    )
+  ) %>%
+  layout(
+    scene = list(
+      camera=list(
+        eye = list(x=1.87, y=0.88, z=-0.64)
+        ),
+      xaxis = list(title = "X"),
+      yaxis = list(title = "X^2"),
+      zaxis = list(title = "Density")
+      )
+  )
+```
+
+#### Parameters x1 and x4
+```{r echo=F}
+pdf_1_4 = matrix(0 , n_points , n_points)
+for ( r in 1:length(x1_grid) ){
+  for ( c in 1:length(x4_grid) ){
+    candidate = as.matrix(rbind( x1_grid[r], theta[2,], x4_grid[c] ))
+    thetas_diff = candidate - theta
+    pdf_1_4[r,c] = ( 1/sqrt( ( (2*pi)^n_params ) * cov_det) ) * 
+      exp( -0.5 * t(-thetas_diff) %*% cov_inv %*% -thetas_diff )
+  }
+}
+
+plot_ly(x = x1_grid, y = x4_grid, z = pdf_1_4) %>% add_surface(
+  contours = list(
+    z = list(
+      show=TRUE,
+      usecolormap=TRUE,
+      highlightcolor="#ff0000",
+      project=list(z=TRUE)
+      )
+    )
+  ) %>%
+  layout(
+    scene = list(
+      camera=list(
+        eye = list(x=1.87, y=0.88, z=-0.64)
+        ),
+      xaxis = list(title = "X"),
+      yaxis = list(title = "X^4"),
+      zaxis = list(title = "Density")
+      )
+  )
+```
+
+#### Parameters x2 and x4
+```{r echo=F}
+pdf_2_4 = matrix(0 , n_points , n_points)
+for ( r in 1:length(x2_grid) ){
+  for ( c in 1:length(x4_grid) ){
+    candidate = as.matrix(rbind(theta[1,], x2_grid[r], x4_grid[c] ))
+    thetas_diff = candidate - theta
+    pdf_2_4[r,c] = ( 1/sqrt( ( (2*pi)^n_params ) * cov_det) ) * 
+      exp( -0.5 * t(-thetas_diff) %*% cov_inv %*% -thetas_diff )
+  }
+}
+
+plot_ly(x = x2_grid, y = x4_grid, z = pdf_2_4) %>% add_surface(
+  contours = list(
+    z = list(
+      show=TRUE,
+      usecolormap=TRUE,
+      highlightcolor="#ff0000",
+      project=list(z=TRUE)
+      )
+    )
+  ) %>%
+  layout(
+    scene = list(
+      camera=list(
+        eye = list(x=1.87, y=0.88, z=-0.64)
+        ),
+      xaxis = list(title = "X^2"),
+      yaxis = list(title = "X^4"),
+      zaxis = list(title = "Density")
+      )
+  )
+```
+
+## Model's prediction
+Now we'll generate predictions on training data and 95% confidence intervals
+```{r echo=F}
+y_pred = train_X %*% theta
+
+conf = {}
+for (i in 1:nrow(train_X)) {
+  Xi = train_X[i,]
+  Xi = matrix(Xi, 1, 3)
+  v = Xi %*% cov %*% t(Xi)
+  conf = rbind(conf, v)
+}
+
+conf_95 = 1.96*sqrt(conf)
+```
+
+Plot the predictions + CI
+```{r echo=F}
+pred_data = data.frame(y_pred = y_pred, lower = y_pred - conf_95, upper = y_pred + conf_95)
+pred_data = cbind(train_X[,1],train_y, pred_data)
+colnames(pred_data)[1:2] = c("x", "y")
+
+(errorbars_plot = ggplot(pred_data, aes(x = x, y = y_pred))+
+  geom_point(color = "blue")+
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2)+
+  ylab("y")+
+  theme_few())
+
+(errorbars_zoom = errorbars_plot + coord_cartesian(ylim = c(0,0.5)))
+
+ggsave("figures/08a_prediction_confidence.png", errorbars_plot, width = 7, height = 4)
+ggsave("figures/08b_prediction_confidence_zoom.png", errorbars_zoom, width = 7, height = 4)
+```
+
+```{r echo=FALSE}
+(y_y_pred = ggplot(pred_data, aes(x = y, y = y_pred))+
+  geom_point()+
+  theme_few())
+
+ggsave("figures/08c_true_pred.png", y_y_pred, width = 7, height = 4)
+```
+
+## Model validation
+
+Validate the model on new train-test split - 70:30
+```{r echo=F}
+train = data[1:175,]
+test = data[176:250,]
+```
+
+Construct X matrices (train and test)
+```{r echo=F}
+X_train = cbind(train$x,
+          train$x^2,
+          train$x^4
+          ) 
+
+X_test = cbind(test$x,
+          test$x^2,
+          test$x^4
+          ) 
+```
+
+Re-use the fitting function from model selection
+```{r echo=F}
+fit_evaluate = function(X_tr, y_tr, X_ts, y_ts){
+  #estimate parameters
+  theta = solve(crossprod(X_tr), crossprod(X_tr, y_tr))
+  #predict test data
+  predictions = X_ts %*% theta
+  #calculate error
+  MSE_test = mean((y_ts - predictions)^2)
+  R2_test = R2_adj(y_ts, predictions, 3)
+  
+  predictions = X_tr %*% theta
+  #calculate error
+  MSE_train = mean((y_tr - predictions)^2)
+  R2_train = R2_adj(y_tr, predictions, 3)
+  
+  return(list(MSE_train, MSE_test, R2_train, R2_test))
+}
+```
+
+Fit model on training data and predict testing data
+```{r echo=F}
+fit = fit_evaluate(X_train, train$y, X_test, test$y)
+
+cat("MSE on training data = ", fit[[1]],
+    "\nMSE on testing  data = ", fit[[2]],
+    "\nR2 on training data = ", fit[[3]],
+    "\nR2 on testing  data = ", fit[[4]])
+```
+
+
+### Validate model with k-fold cross-validation
+
+```{r echo=F}
+#Randomly shuffle the data
+data_shuffled  = data[sample(nrow(data)),]
+
+#Create 10 equally size folds
+k = 7
+folds = cut(seq_len(nrow(data_shuffled)),breaks=k,labels=FALSE)
+
+#Perform 10 fold cross validation
+result = data.frame(fold = 1:k,
+                    MSE_train = rep(0, k),
+                    MSE_test = rep(0, k),
+                    R2_train = rep(0, k),
+                    R2_test = rep(0, k)
+                    )
+for(i in 1:k){
+    #Segment your data by fold using the which() function 
+    test_idx =  which(folds==i,arr.ind=TRUE)
+    train = data[-test_idx,]
+    test = data[test_idx,]
+    
+    X_train = cbind(train$x,
+          train$x^2,
+          train$x^4
+          ) 
+    X_test = cbind(test$x,
+                   test$x^2,
+                   test$x^4
+                   ) 
+    fit = fit_evaluate(X_tr = X_train, y_tr = train$y,
+                               X_ts = X_test, y_ts = test$y)
+    result[i, 2:5] = fit
+}
+
+MSE_plot = data.frame(mean = c(mean(result$MSE_train),
+                              mean(result$MSE_test)),
+                     sd = c(sd(result$MSE_train),
+                            sd(result$MSE_test)),
+                     type = c("training", "testing"))
+R2_plot = data.frame(mean = c(mean(result$R2_train),
+                              mean(result$R2_test)),
+                     sd = c(sd(result$R2_train),
+                            sd(result$R2_test)),
+                     type = c("training", "testing"))
+
+MSE_plot$type = factor(MSE_plot$type, levels = c("training", "testing"))
+R2_plot$type = factor(R2_plot$type, levels = c("training", "testing"))
+
+CV_data = rbind(MSE_plot, R2_plot)
+CV_data$metric = as.factor(c(rep("MSE",2), rep("adjusted R2", 2)))
+
+(CV_plot = ggplot(CV_data, aes(x = type, y = mean, color = type))+
+  geom_point()+
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd))+
+  theme_few()+
+  theme(legend.position = "bottom")+
+  labs(x = "", y = "")+
+  facet_wrap(~metric, scales = "free"))
+
+ggsave("figures/09_CV_performance.png", CV_plot, width = 7, height = 4)
+```
+
+```{r echo=FALSE}
+(MSE_plot = ggplot(result, aes(MSE_train, MSE_test))+
+  geom_line()+
+  theme_few())
+
+ggsave("figures/09b_train_test_performance.png", width = 7, height = 4)
+```
+
+

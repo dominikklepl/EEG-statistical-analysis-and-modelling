@@ -1,0 +1,313 @@
+---
+title: "Exploratory data analysis"
+author: "Dominik Klepl"
+date: "11/26/2019"
+output:
+  word_document: default
+---
+In this project, we are working with 2 EEG signals. The goal of the project is model signal y as dependent variable predicted from signal x. 
+We start with an exploratory analysis to better understand the nature of both signals. We look at distributions of both signals and test whether they follow normal distribution. We'll also investigate possible relationships between the two variables both by eyeballing scatterplots and by a statistical test of correlation.
+Finally, we'll fit a simple linear model y ~ b1*x + error, generate predictions and their uncertainty, do a quick residual analysis.
+As little bonus we use local polynomial regression fitting to see if we can get some hints about the underlaying true model that generated the y signal.
+
+
+```{r libraries, echo=FALSE}
+pacman::p_load(ggplot2, ggthemes, tidyr, patchwork, ggExtra)
+```
+
+Load the dataset
+```{r echo=FALSE}
+data = read.csv("data/x_y.csv", header = F)
+```
+
+Rename the column names to x and y
+```{r echo=FALSE}
+colnames(data) = c("x", "y")
+```
+
+Add time variable to preserve the time-series structure
+```{r echo=FALSE}
+data$t = 1:nrow(data)
+```
+
+## Relationship between x and y
+We start with inspecting the input/output variables by plotting them. First on the same axis simply as two time-series signals.
+
+```{r echo=FALSE}
+data_long = gather(data, signal, value, x:y, factor_key = T)
+
+(p1 = ggplot(data_long, aes(x = t, y = value, color = signal))+
+  geom_line()+
+  facet_wrap(~signal, scales = "free_y")+
+  theme_few()+
+  scale_color_few()+
+  guides(color = F)+
+  theme(strip.background = element_rect(fill="grey")))
+```
+
+Now we also plot the signals against each other.
+
+```{r echo=FALSE}
+(x_y_plot = ggplot(data, aes(x = x, y = y))+
+  geom_point()+
+  theme_few()+
+  scale_color_few())
+```
+One point seems to be an **outlier**.
+
+It might be a good idea to to remove the outlier now for plotting so that we have a more detailed (zoomed-in) look at the rest of the datapoints.
+
+```{r echo=FALSE}
+x_y_plot + coord_cartesian(ylim = c(0, 82))
+```
+The x^2 component is even clearer in the zoomed-in view.
+
+
+Plot p1 and x_y_plot together in one *beautiful* plot.
+
+```{r echo=FALSE}
+p2 = p1 / x_y_plot
+ggsave("figures/01_x_vs_y.png", p2, dpi = 300, height = 4, width = 8)
+p2
+```
+From the scatterplot of the x and y variables we can assume that the a x^2 might be a good parameter for the model.
+
+### Correlation test
+We can formally test whether there is correlation between x and y. Although we can already tell from the scatterplot that there must be some correlation.
+We can use **pearson's correlation coefficient**, testing hypothesis that true correlation differs from 0.
+
+```{r echo=FALSE}
+cor.test(data$x, data$y, alternative = "two.sided", method = "pearson")
+```
+There is small positive correlation between the two variables. Null hypothesis was rejected.
+
+## Distributions
+Now we inspect the distribution of both x and y
+
+```{r echo=FALSE}
+(hists = ggplot(data_long, aes(x = value, fill=signal))+
+  geom_histogram(bins = 50)+
+  facet_wrap(~signal, scales = "free")+
+  theme_few()+
+  xlab("")+
+  scale_fill_few()+
+  guides(fill = F)+
+  theme(strip.background = element_rect(fill="grey")))
+```
+X seems to be approximately **normal** slightly skewed with heavy left tail. Y seems to be **exponentially distributed**. A hypothesis that y is **log-normal** might be worth testing.
+
+### QQ-plots
+```{r echo=FALSE}
+(qqplots = ggplot(data_long, aes(sample = value, color = signal))+
+  stat_qq()+
+  facet_wrap(~signal, scales = "free")+
+  theme_few()+
+  scale_color_few()+
+  guides(color = F)+
+  xlab("")+
+  theme(strip.text = element_blank()))
+```
+
+Combine histograms and qqplots into one beautiful plot
+```{r echo=FALSE}
+(distribution_plot = hists / qqplots)
+
+ggsave("figures/02_distribution.png", distribution_plot, dpi = 300, height = 4.4, width = 7)
+```
+
+### Further tests of normality
+We can use Shapiro-Wilk test which tests the hypothesis whether variable is normally distributed. (Null: data is normally distributed)
+```{r echo=FALSE}
+cat("Testing signal x\n")
+shapiro.test(data$x)
+cat("Testing signal y\n")
+shapiro.test(data$y)
+```
+
+
+
+#### Just for fun - Is y log-normal?
+```{r echo=FALSE}
+log_norm = as.data.frame(log(data$y))
+colnames(log_norm) = "y"
+log_norm = na.omit(log_norm)
+ggplot(log_norm, aes(x = y))+
+  geom_histogram(bins = 50)+
+  ggtitle("This might be normal-ish")
+
+cat("How normal is log(y)?\n")
+shapiro.test(log_norm$y)
+cat("Still didn't pass the test")
+```
+
+#### Scatter plot with histograms on margins
+```{r echo=F}
+margin_hist = ggplot(data, aes(x = x, y = y))+
+  geom_point()+
+  theme_few()+
+  scale_color_few()
+(margin_hist = ggMarginal(margin_hist, type = "histogram", fill="transparent"))
+```
+
+
+
+#### Boxplots and violin plots
+Let's continue with other tests about properties of the signals. First use boxplot and violin plots.
+
+```{r echo=FALSE}
+(boxplots = ggplot(data_long, aes(x = signal, y = value, fill = signal))+
+  geom_boxplot()+
+  facet_wrap(~signal, scales = "free")+
+  theme_few()+
+  scale_fill_few()+
+  guides(fill = F)+
+  xlab("")+
+  theme(strip.text = element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.x = element_blank()))
+
+violins = ggplot(data_long, aes(x = signal, y = value, fill = signal))+
+  geom_violin()+
+  facet_wrap(~signal, scales = "free")+
+  theme_few()+
+  scale_fill_few()+
+  xlab("")+
+  theme(strip.text = element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.x = element_blank())
+
+(box_violin = boxplots + violins)
+
+ggsave("figures/03_boxviolin.png", height = 4, width = 7)
+```
+
+#### Violin with jitter points
+Interesting alternative to boring boxplots.
+```{r echo=F}
+ggplot(data_long, aes(x = signal, y = value, fill =  "gray80"))+
+  geom_violin(alpha = 0.5)+
+  facet_wrap(~signal, scales = "free")+
+  theme_few()+
+  scale_fill_few()+
+  guides(fill = F)+
+  xlab("")+
+  geom_jitter(aes(color = signal), alpha = 0.25,
+                position = position_jitter(width = 0.2))
+```
+
+
+### Fit linear model
+Try to fit a linear model with just one parameter:
+y ~ ß1*x
+```{r echo=F}
+X = as.matrix(data$x)
+
+#estimate parameter
+theta = solve(crossprod(X), crossprod(X, data$y))
+
+#generate predictions
+y_pred = X %*% theta
+
+#calculate mean squared error
+residuals = (data$y - y_pred)^2
+SSE = sum(residuals) #same as norm(error_sq, "2")^2
+MSE = mean(residuals)
+cat(paste0("MSE of the fitted model is: ", round(MSE, 3)))
+
+#calculate R^2 and adjusted R^2
+R2 = function (x, y) {cor(x, y) ^ 2}
+r_squared = R2(data$y, y_pred)
+R2_adj = function(R2, n, p) {1 - (1 - R2)*((n - 1)/(n - p - 1))}
+r_adjusted = R2_adj(r_squared, 250, 1)
+
+cat("R^2 of the fitted model is: ", round(r_squared, 3))
+cat("Adjusted R^2 of the fitted model is: ", round(r_adjusted, 3))
+
+#calculate prediction CI
+sigma_sq = SSE/(nrow(X) - 1)
+cov = sigma_sq * (solve(t(X) %*% X))
+
+conf = {}
+for (i in 1:nrow(X)) {
+  Xi = X[i,]
+  Xi = matrix(Xi, 1, 1)
+  v = Xi %*% cov %*% t(Xi)
+  conf = rbind(conf, v)
+}
+
+conf_95 = 1.96*sqrt(conf)
+```
+
+#### Compute AIC and BIC
+```{r echo=F}
+#compute log-likelihood of the model
+loglik= sum(log(dnorm(data$y, mean = y_pred, sd = sqrt(sigma_sq))))
+
+#compute AIC
+k = 1
+AIC = 2*k - 2*loglik
+
+#compute BIC
+BIC = log(nrow(data))*k - 2*loglik
+
+cat("AIC is:", AIC, "\nBIC is:", BIC)
+```
+
+
+
+#### Residual analysis
+```{r echo=FALSE}
+residuals = sqrt(residuals)
+quantiles = quantile(residuals)
+names(quantiles) = c("Min", "25%", "Median", "75%", "Max")
+
+cat("Residual analysis:\n")
+quantiles
+```
+
+
+Plot residuals and qqplot
+```{r echo=FALSE}
+residuals = as.data.frame(residuals)
+(res1 = ggplot(residuals, aes(x = V1))+
+  geom_histogram(bins = 40)+
+    theme_few())
+
+ggsave("figures/04_residuals_x.png", res1, width = 7, height = 4)
+```
+
+
+
+Plot model's predictions + 95% confidence intervals
+```{r echo=F}
+#plot y and predictions
+m1_df = cbind(data, y_pred, conf_95)
+
+(m1_plot = ggplot(m1_df, aes(x = x))+
+    geom_point(aes(y = y))+
+    geom_line(aes(y = y_pred), color = "blue")+
+    geom_ribbon(aes(ymin = y_pred - conf_95, ymax = y_pred + conf_95), fill = "blue", alpha = 0.2)+
+    theme_few()+
+    annotate("text", x = 0, y = 300, label = paste0("y ~ ", round(theta,3), " * x"))
+    )
+
+ggsave("figures/05_linear_model.png", width = 7, height = 4)
+```
+
+## A bit of "cheating"
+Just for fun, ggplot has function for fitting a simple linear model (including confidence intervals). There's also function for fitting a local polynomial surface/line which basically tries to find the best polynomial model (yes exactly what is our task in the coursework).
+```{r echo=F}
+ggplot(data, aes(x = x, y = y))+
+  geom_point()+
+  geom_smooth(method = "lm", formula = y ~ -1 + x)+
+  geom_smooth(method = "loess", color = "green", fill = "grey")+
+  theme_few()+
+  labs(title = "Fei's true model has most likely a x2 term ;-)")
+```
+
+
+
+
+
+
+
